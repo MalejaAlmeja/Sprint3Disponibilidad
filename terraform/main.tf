@@ -96,9 +96,11 @@ locals {
 
 # --------------------------------------------- RDS x3 ---------------------------------------------
 resource "aws_db_subnet_group" "db_subnets" {
-  name       = "${var.project}-db-subnet-group"
+  name       = "${var.project}-db-subnet-group-vpc10"  # <- nombre nuevo
   subnet_ids = local.subnets
-  tags = { Name = "${var.project}-db-subnet-group" }
+  tags = {
+    Name = "${var.project}-db-subnet-group-vpc10"
+  }
 }
 
 resource "random_password" "db_password" {
