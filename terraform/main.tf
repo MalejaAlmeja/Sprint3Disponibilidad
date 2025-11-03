@@ -12,13 +12,15 @@ provider "aws" {
   region = var.region
 }
 
-# ======================= VPC por defecto (NO se crea VPC nueva) =======================
-data "aws_default_vpc" "default" {}
+# ======================= VPC por defecto (usar data aws_vpc, no aws_default_vpc) =======================
+data "aws_vpc" "default" {
+  default = true
+}
 
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
-    values = [data.aws_default_vpc.default.id]
+    values = [data.aws_vpc.default.id]
   }
 }
 
@@ -31,7 +33,7 @@ locals {
 resource "aws_security_group" "rds_sg" {
   name        = "${var.project}-rds-sg"
   description = "Allow MySQL from Internet (LAB ONLY)"
-  vpc_id      = data.aws_default_vpc.default.id
+  vpc_id      = data.aws_vpc.default.id   # <-- actualizado
 
   ingress {
     description = "MySQL 3306 from anywhere (LAB ONLY)"
@@ -51,10 +53,9 @@ resource "aws_security_group" "rds_sg" {
   tags = { Name = "${var.project}-rds-sg" }
 }
 
-# (Opcional) SG para Lambda, por si luego activas VPC access
 resource "aws_security_group" "lambda_sg" {
   name   = "${var.project}-lambda-sg"
-  vpc_id = data.aws_default_vpc.default.id
+  vpc_id = data.aws_vpc.default.id        # <-- actualizado
 
   egress {
     from_port   = 0
