@@ -20,7 +20,7 @@ variable "db_instance_class" {
 
 variable "db_engine_version" {
   type    = string
-  default = "8.0.35"
+  default = "8.0.36"
 }
 
 variable "db_name" {
@@ -46,4 +46,10 @@ variable "lambda_timeout" {
 variable "lambda_provisioned" {
   type    = number
   default = 2
+}
+
+variable "existing_lambda_role_arn" {
+  description = "ARN de un rol existente con confianza en lambda.amazonaws.com"
+  type        = string
+  default     = ""
 }

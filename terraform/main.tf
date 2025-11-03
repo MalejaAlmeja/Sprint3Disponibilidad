@@ -17,18 +17,12 @@ resource "aws_vpc" "vpc" {
   cidr_block           = "10.20.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-
-  tags = {
-    Name = "${var.project}-vpc"
-  }
+  tags = { Name = "${var.project}-vpc" }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.vpc.id
-
-  tags = {
-    Name = "${var.project}-igw"
-  }
+  tags = { Name = "${var.project}-igw" }
 }
 
 resource "aws_subnet" "public" {
@@ -37,18 +31,12 @@ resource "aws_subnet" "public" {
   availability_zone       = var.azs[count.index]
   cidr_block              = cidrsubnet(aws_vpc.vpc.cidr_block, 4, count.index)
   map_public_ip_on_launch = true
-
-  tags = {
-    Name = "${var.project}-public-${count.index}"
-  }
+  tags = { Name = "${var.project}-public-${count.index}" }
 }
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.vpc.id
-
-  tags = {
-    Name = "${var.project}-public-rt"
-  }
+  tags = { Name = "${var.project}-public-rt" }
 }
 
 resource "aws_route" "public_internet" {
@@ -63,13 +51,7 @@ resource "aws_route_table_association" "public_assoc" {
   subnet_id      = aws_subnet.public[count.index].id
 }
 
-# Usaremos las subnets públicas para Lambda y RDS en el lab (simple).
-# En producción: subnets privadas + NAT o VPC endpoints.
-locals {
-  subnets = aws_subnet.public[*].id
-}
-
-# ---------------------------------------- Security Groups ----------------------------------------
+# Aunque no usaremos Lambda en VPC, dejo el SG por si luego lo activas
 resource "aws_security_group" "lambda_sg" {
   name   = "${var.project}-lambda-sg"
   vpc_id = aws_vpc.vpc.id
@@ -81,22 +63,21 @@ resource "aws_security_group" "lambda_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "${var.project}-lambda-sg"
-  }
+  tags = { Name = "${var.project}-lambda-sg" }
 }
 
+# ------------------------ SG de RDS ABIERTO (solo LAB). Cerrar al terminar ------------------------
 resource "aws_security_group" "rds_sg" {
   name        = "${var.project}-rds-sg"
-  description = "Allow MySQL from Lambda SG"
+  description = "Allow MySQL from Internet (LAB ONLY)"
   vpc_id      = aws_vpc.vpc.id
 
   ingress {
-    description     = "MySQL 3306 from Lambda SG"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.lambda_sg.id]
+    description = "MySQL 3306 from anywhere (LAB ONLY)"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -106,19 +87,18 @@ resource "aws_security_group" "rds_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "${var.project}-rds-sg"
-  }
+  tags = { Name = "${var.project}-rds-sg" }
+}
+
+locals {
+  subnets = aws_subnet.public[*].id
 }
 
 # --------------------------------------------- RDS x3 ---------------------------------------------
 resource "aws_db_subnet_group" "db_subnets" {
   name       = "${var.project}-db-subnet-group"
   subnet_ids = local.subnets
-
-  tags = {
-    Name = "${var.project}-db-subnet-group"
-  }
+  tags = { Name = "${var.project}-db-subnet-group" }
 }
 
 resource "random_password" "db_password" {
@@ -126,10 +106,10 @@ resource "random_password" "db_password" {
   special = false
 }
 
+# Nota: QUITO engine_version para evitar errores de versión no soportada
 resource "aws_db_instance" "db1" {
   identifier             = "${var.project}-db1"
   engine                 = "mysql"
-  engine_version         = var.db_engine_version
   instance_class         = var.db_instance_class
   allocated_storage      = 20
   db_name                = var.db_name
@@ -141,16 +121,12 @@ resource "aws_db_instance" "db1" {
   skip_final_snapshot    = true
   deletion_protection    = false
   apply_immediately      = true
-
-  tags = {
-    Name = "${var.project}-db1"
-  }
+  tags = { Name = "${var.project}-db1" }
 }
 
 resource "aws_db_instance" "db2" {
   identifier             = "${var.project}-db2"
   engine                 = "mysql"
-  engine_version         = var.db_engine_version
   instance_class         = var.db_instance_class
   allocated_storage      = 20
   db_name                = var.db_name
@@ -162,16 +138,12 @@ resource "aws_db_instance" "db2" {
   skip_final_snapshot    = true
   deletion_protection    = false
   apply_immediately      = true
-
-  tags = {
-    Name = "${var.project}-db2"
-  }
+  tags = { Name = "${var.project}-db2" }
 }
 
 resource "aws_db_instance" "db3" {
   identifier             = "${var.project}-db3"
   engine                 = "mysql"
-  engine_version         = var.db_engine_version
   instance_class         = var.db_instance_class
   allocated_storage      = 20
   db_name                = var.db_name
@@ -183,37 +155,7 @@ resource "aws_db_instance" "db3" {
   skip_final_snapshot    = true
   deletion_protection    = false
   apply_immediately      = true
-
-  tags = {
-    Name = "${var.project}-db3"
-  }
-}
-
-# ---------------------------------------------- IAM ----------------------------------------------
-data "aws_iam_policy_document" "assume_lambda" {
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "lambda_role" {
-  name               = "${var.project}-lambda-role"
-  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-resource "aws_iam_role_policy_attachment" "xray_write" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+  tags = { Name = "${var.project}-db3" }
 }
 
 # ---------------------------- Build Lambda package (pip local + zip con archive_file) ----------------------------
@@ -225,28 +167,26 @@ set -e
 rm -rf lambda_build
 mkdir -p lambda_build
 cp -r ../lambda/* lambda_build/
-python -m pip install -r ../lambda/requirements.txt -t lambda_build
+python -m pip install --no-cache-dir -r ../lambda/requirements.txt -t lambda_build
 EOT
   }
-
-  # Forzar rebuild cuando cambies el código (puedes afinar con triggers hash de archivos)
-  triggers = {
-    always = timestamp()
-  }
+  triggers = { always = timestamp() }
 }
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambda_build"
   output_path = "${path.module}/lambda_build.zip"
-
-  depends_on = [null_resource.pip_install]
+  depends_on  = [null_resource.pip_install]
 }
 
-# -------------------------------------------- Lambda --------------------------------------------
+# -------------------------------------------- Lambda (SIN VPC) --------------------------------------------
 resource "aws_lambda_function" "consistency" {
   function_name = "${var.project}-resolver"
-  role          = aws_iam_role.lambda_role.arn
+
+  # USAR ROL EXISTENTE (debes pasarlo por -var existing_lambda_role_arn=...)
+  role          = var.existing_lambda_role_arn
+
   handler       = "handler.handler"
   runtime       = "python3.11"
   filename      = data.archive_file.lambda_zip.output_path
@@ -254,29 +194,23 @@ resource "aws_lambda_function" "consistency" {
   timeout       = var.lambda_timeout
   publish       = true
 
-  tracing_config {
-    mode = "Active" # X-Ray
-  }
+  tracing_config { mode = "Active" } # X-Ray si el rol lo permite
 
   environment {
     variables = {
-      DB1_HOST         = aws_db_instance.db1.address
-      DB2_HOST         = aws_db_instance.db2.address
-      DB3_HOST         = aws_db_instance.db3.address
-      DB_USER          = var.db_user
-      DB_PASS          = random_password.db_password.result
-      DB_NAME          = var.db_name
-      CONNECT_TIMEOUT  = "0.05"
-      READ_TIMEOUT     = "0.05"
-      WRITE_TIMEOUT    = "0.05"
+      DB1_HOST        = aws_db_instance.db1.address
+      DB2_HOST        = aws_db_instance.db2.address
+      DB3_HOST        = aws_db_instance.db3.address
+      DB_USER         = var.db_user
+      DB_PASS         = random_password.db_password.result
+      DB_NAME         = var.db_name
+      CONNECT_TIMEOUT = "0.05"
+      READ_TIMEOUT    = "0.05"
+      WRITE_TIMEOUT   = "0.05"
     }
   }
 
-  vpc_config {
-    security_group_ids = [aws_security_group.lambda_sg.id]
-    subnet_ids         = local.subnets
-  }
-
+  # IMPORTANTE: SIN VPC (quitamos vpc_config)
   depends_on = [
     aws_db_instance.db1,
     aws_db_instance.db2,
@@ -284,7 +218,7 @@ resource "aws_lambda_function" "consistency" {
   ]
 }
 
-# Alias apuntando a la versión publicada (requerido para Provisioned Concurrency)
+# Alias para provisioned concurrency (no requiere IAM extra)
 resource "aws_lambda_alias" "live" {
   name             = "live"
   description      = "Alias con provisioned concurrency"
@@ -322,7 +256,6 @@ resource "aws_lambda_permission" "allow_events" {
 }
 
 # ---------------------------------------- CloudWatch Alarma ----------------------------------------
-# Nota: aquí se usa Average por simplicidad. Puedes migrar a p95 con Metric Math si tu entrega lo exige.
 resource "aws_cloudwatch_metric_alarm" "latency_alarm" {
   alarm_name          = "${var.project}-resolutionLatencyMs>1000"
   alarm_description   = "Resolution latency over 1000ms (avg)"
