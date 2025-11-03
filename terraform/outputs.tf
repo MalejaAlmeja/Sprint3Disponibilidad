@@ -5,5 +5,11 @@ output "db_endpoints" {
     db3 = aws_db_instance.db3.address
   }
 }
-output "lambda_invoke_arn" { value = aws_lambda_function.consistency.arn }
-output "event_rule_name"   { value = aws_cloudwatch_event_rule.detect_inconsistency.name }
+
+output "lambda_invoke_arn" {
+  value = var.enable_lambda ? aws_lambda_function.consistency[0].arn : ""
+}
+
+output "event_rule_name" {
+  value = var.enable_lambda ? aws_cloudwatch_event_rule.detect_inconsistency[0].name : ""
+}

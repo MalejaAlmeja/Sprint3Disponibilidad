@@ -22,7 +22,7 @@ resource "aws_vpc" "vpc" {
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.vpc.id
-  tags = { Name = "${var.project}-igw" }
+  tags   = { Name = "${var.project}-igw" }
 }
 
 resource "aws_subnet" "public" {
@@ -36,7 +36,7 @@ resource "aws_subnet" "public" {
 
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.vpc.id
-  tags = { Name = "${var.project}-public-rt" }
+  tags   = { Name = "${var.project}-public-rt" }
 }
 
 resource "aws_route" "public_internet" {
@@ -51,19 +51,8 @@ resource "aws_route_table_association" "public_assoc" {
   subnet_id      = aws_subnet.public[count.index].id
 }
 
-# Aunque no usaremos Lambda en VPC, dejo el SG por si luego lo activas
-resource "aws_security_group" "lambda_sg" {
-  name   = "${var.project}-lambda-sg"
-  vpc_id = aws_vpc.vpc.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${var.project}-lambda-sg" }
+locals {
+  subnets = aws_subnet.public[*].id
 }
 
 # ------------------------ SG de RDS ABIERTO (solo LAB). Cerrar al terminar ------------------------
@@ -90,17 +79,26 @@ resource "aws_security_group" "rds_sg" {
   tags = { Name = "${var.project}-rds-sg" }
 }
 
-locals {
-  subnets = aws_subnet.public[*].id
+# (Dejamos también un SG para Lambda por si luego decides usar VPC)
+resource "aws_security_group" "lambda_sg" {
+  name   = "${var.project}-lambda-sg"
+  vpc_id = aws_vpc.vpc.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.project}-lambda-sg" }
 }
 
 # --------------------------------------------- RDS x3 ---------------------------------------------
 resource "aws_db_subnet_group" "db_subnets" {
-  name       = "${var.project}-db-subnet-group-vpc10"  # <- nombre nuevo
+  name       = "${var.project}-db-subnet-group-vpc10"
   subnet_ids = local.subnets
-  tags = {
-    Name = "${var.project}-db-subnet-group-vpc10"
-  }
+  tags       = { Name = "${var.project}-db-subnet-group-vpc10" }
 }
 
 resource "random_password" "db_password" {
@@ -108,12 +106,13 @@ resource "random_password" "db_password" {
   special = false
 }
 
-# Nota: QUITO engine_version para evitar errores de versión no soportada
+# Nota: sin engine_version para evitar incompatibilidades en la región/lab
 resource "aws_db_instance" "db1" {
   identifier             = "${var.project}-db1"
   engine                 = "mysql"
   instance_class         = var.db_instance_class
   allocated_storage      = 20
+  storage_type           = "gp3"
   db_name                = var.db_name
   username               = var.db_user
   password               = random_password.db_password.result
@@ -131,6 +130,7 @@ resource "aws_db_instance" "db2" {
   engine                 = "mysql"
   instance_class         = var.db_instance_class
   allocated_storage      = 20
+  storage_type           = "gp3"
   db_name                = var.db_name
   username               = var.db_user
   password               = random_password.db_password.result
@@ -148,6 +148,7 @@ resource "aws_db_instance" "db3" {
   engine                 = "mysql"
   instance_class         = var.db_instance_class
   allocated_storage      = 20
+  storage_type           = "gp3"
   db_name                = var.db_name
   username               = var.db_user
   password               = random_password.db_password.result
@@ -160,7 +161,7 @@ resource "aws_db_instance" "db3" {
   tags = { Name = "${var.project}-db3" }
 }
 
-# ---------------------------- Build Lambda package (pip local + zip con archive_file) ----------------------------
+# ---------------------------- Empaquetado Lambda (zip con archive_file) ----------------------------
 resource "null_resource" "pip_install" {
   provisioner "local-exec" {
     working_dir = path.module
@@ -182,13 +183,12 @@ data "archive_file" "lambda_zip" {
   depends_on  = [null_resource.pip_install]
 }
 
-# -------------------------------------------- Lambda (SIN VPC) --------------------------------------------
+# -------------------------------------------- Lambda (opcional, SIN VPC) --------------------------------------------
 resource "aws_lambda_function" "consistency" {
+  count         = var.enable_lambda ? 1 : 0
+
   function_name = "${var.project}-resolver"
-
-  # USAR ROL EXISTENTE (debes pasarlo por -var existing_lambda_role_arn=...)
-  role          = var.existing_lambda_role_arn
-
+  role          = var.existing_lambda_role_arn     # Debes pasar el ARN cuando enable_lambda = true
   handler       = "handler.handler"
   runtime       = "python3.11"
   filename      = data.archive_file.lambda_zip.output_path
@@ -198,6 +198,7 @@ resource "aws_lambda_function" "consistency" {
 
   tracing_config { mode = "Active" } # X-Ray si el rol lo permite
 
+  # SIN VPC para no requerir AWSLambdaVPCAccessExecutionRole
   environment {
     variables = {
       DB1_HOST        = aws_db_instance.db1.address
@@ -212,7 +213,6 @@ resource "aws_lambda_function" "consistency" {
     }
   }
 
-  # IMPORTANTE: SIN VPC (quitamos vpc_config)
   depends_on = [
     aws_db_instance.db1,
     aws_db_instance.db2,
@@ -220,22 +220,24 @@ resource "aws_lambda_function" "consistency" {
   ]
 }
 
-# Alias para provisioned concurrency (no requiere IAM extra)
 resource "aws_lambda_alias" "live" {
+  count            = var.enable_lambda ? 1 : 0
   name             = "live"
   description      = "Alias con provisioned concurrency"
-  function_name    = aws_lambda_function.consistency.function_name
-  function_version = aws_lambda_function.consistency.version
+  function_name    = aws_lambda_function.consistency[0].function_name
+  function_version = aws_lambda_function.consistency[0].version
 }
 
 resource "aws_lambda_provisioned_concurrency_config" "pc" {
-  function_name                     = aws_lambda_function.consistency.function_name
-  qualifier                         = aws_lambda_alias.live.name
-  provisioned_concurrent_executions = var.lambda_provisioned
+  count                              = var.enable_lambda ? 1 : 0
+  function_name                      = aws_lambda_function.consistency[0].function_name
+  qualifier                          = aws_lambda_alias.live[0].name
+  provisioned_concurrent_executions  = var.lambda_provisioned
 }
 
-# ------------------------------------------- EventBridge -------------------------------------------
+# ------------------------------------------- EventBridge (opcional) -------------------------------------------
 resource "aws_cloudwatch_event_rule" "detect_inconsistency" {
+  count       = var.enable_lambda ? 1 : 0
   name        = "${var.project}-inconsistency-rule"
   description = "Dispara Lambda al detectar inconsistencia"
   event_pattern = jsonencode({
@@ -244,17 +246,19 @@ resource "aws_cloudwatch_event_rule" "detect_inconsistency" {
 }
 
 resource "aws_cloudwatch_event_target" "lambda_target" {
-  rule      = aws_cloudwatch_event_rule.detect_inconsistency.name
+  count     = var.enable_lambda ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.detect_inconsistency[0].name
   target_id = "ConsistencyResolver"
-  arn       = aws_lambda_function.consistency.arn
+  arn       = aws_lambda_function.consistency[0].arn
 }
 
 resource "aws_lambda_permission" "allow_events" {
+  count         = var.enable_lambda ? 1 : 0
   statement_id  = "AllowEventBridgeInvoke"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.consistency.function_name
+  function_name = aws_lambda_function.consistency[0].function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.detect_inconsistency.arn
+  source_arn    = aws_cloudwatch_event_rule.detect_inconsistency[0].arn
 }
 
 # ---------------------------------------- CloudWatch Alarma ----------------------------------------
