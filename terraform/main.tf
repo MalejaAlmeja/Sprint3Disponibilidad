@@ -96,9 +96,16 @@ resource "aws_security_group" "lambda_sg" {
 
 # --------------------------------------------- RDS x3 ---------------------------------------------
 resource "aws_db_subnet_group" "db_subnets" {
-  name       = "${var.project}-db-subnet-group-vpc10"
+  name       = "${var.project}-db-subnet-group-${random_id.sg_suffix.hex}"
   subnet_ids = local.subnets
-  tags       = { Name = "${var.project}-db-subnet-group-vpc10" }
+
+  tags = {
+    Name = "${var.project}-db-subnet-group-${random_id.sg_suffix.hex}"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "random_password" "db_password" {
@@ -272,4 +279,8 @@ resource "aws_cloudwatch_metric_alarm" "latency_alarm" {
   evaluation_periods  = 1
   threshold           = 1000
   comparison_operator = "GreaterThanThreshold"
+}
+
+resource "random_id" "sg_suffix" {
+  byte_length = 2
 }
