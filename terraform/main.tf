@@ -12,54 +12,26 @@ provider "aws" {
   region = var.region
 }
 
-# ---------------------------- VPC mínima (subnets públicas para simplificar el lab) ----------------------------
-resource "aws_vpc" "vpc" {
-  cidr_block           = "10.20.0.0/16"
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags = { Name = "${var.project}-vpc" }
+# ======================= VPC por defecto (NO se crea VPC nueva) =======================
+data "aws_default_vpc" "default" {}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_default_vpc.default.id]
+  }
 }
 
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.vpc.id
-  tags   = { Name = "${var.project}-igw" }
-}
-
-resource "aws_subnet" "public" {
-  count                   = 3
-  vpc_id                  = aws_vpc.vpc.id
-  availability_zone       = var.azs[count.index]
-  cidr_block              = cidrsubnet(aws_vpc.vpc.cidr_block, 4, count.index)
-  map_public_ip_on_launch = true
-  tags = { Name = "${var.project}-public-${count.index}" }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.vpc.id
-  tags   = { Name = "${var.project}-public-rt" }
-}
-
-resource "aws_route" "public_internet" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
-}
-
-resource "aws_route_table_association" "public_assoc" {
-  count          = 3
-  route_table_id = aws_route_table.public.id
-  subnet_id      = aws_subnet.public[count.index].id
-}
-
+# Toma 3 subnets de la VPC por defecto
 locals {
-  subnets = aws_subnet.public[*].id
+  subnets = slice(data.aws_subnets.default.ids, 0, 3)
 }
 
-# ------------------------ SG de RDS ABIERTO (solo LAB). Cerrar al terminar ------------------------
+# ======================= Security Groups en la VPC por defecto =======================
 resource "aws_security_group" "rds_sg" {
   name        = "${var.project}-rds-sg"
   description = "Allow MySQL from Internet (LAB ONLY)"
-  vpc_id      = aws_vpc.vpc.id
+  vpc_id      = data.aws_default_vpc.default.id
 
   ingress {
     description = "MySQL 3306 from anywhere (LAB ONLY)"
@@ -79,10 +51,10 @@ resource "aws_security_group" "rds_sg" {
   tags = { Name = "${var.project}-rds-sg" }
 }
 
-# (Dejamos también un SG para Lambda por si luego decides usar VPC)
+# (Opcional) SG para Lambda, por si luego activas VPC access
 resource "aws_security_group" "lambda_sg" {
   name   = "${var.project}-lambda-sg"
-  vpc_id = aws_vpc.vpc.id
+  vpc_id = data.aws_default_vpc.default.id
 
   egress {
     from_port   = 0
@@ -94,7 +66,11 @@ resource "aws_security_group" "lambda_sg" {
   tags = { Name = "${var.project}-lambda-sg" }
 }
 
-# --------------------------------------------- RDS x3 ---------------------------------------------
+# ======================= Subnet Group con sufijo aleatorio =======================
+resource "random_id" "sg_suffix" {
+  byte_length = 2
+}
+
 resource "aws_db_subnet_group" "db_subnets" {
   name       = "${var.project}-db-subnet-group-${random_id.sg_suffix.hex}"
   subnet_ids = local.subnets
@@ -108,12 +84,13 @@ resource "aws_db_subnet_group" "db_subnets" {
   }
 }
 
+# ======================= Secrets / Password =======================
 resource "random_password" "db_password" {
   length  = 16
   special = false
 }
 
-# Nota: sin engine_version para evitar incompatibilidades en la región/lab
+# ======================= RDS x3 (MySQL, gp3, sin engine_version) =======================
 resource "aws_db_instance" "db1" {
   identifier             = "${var.project}-db1"
   engine                 = "mysql"
@@ -168,7 +145,7 @@ resource "aws_db_instance" "db3" {
   tags = { Name = "${var.project}-db3" }
 }
 
-# ---------------------------- Empaquetado Lambda (zip con archive_file) ----------------------------
+# ======================= Empaquetado Lambda (zip local) =======================
 resource "null_resource" "pip_install" {
   provisioner "local-exec" {
     working_dir = path.module
@@ -190,12 +167,12 @@ data "archive_file" "lambda_zip" {
   depends_on  = [null_resource.pip_install]
 }
 
-# -------------------------------------------- Lambda (opcional, SIN VPC) --------------------------------------------
+# ======================= Lambda (opcional, SIN VPC; controlado por enable_lambda) =======================
 resource "aws_lambda_function" "consistency" {
   count         = var.enable_lambda ? 1 : 0
 
   function_name = "${var.project}-resolver"
-  role          = var.existing_lambda_role_arn     # Debes pasar el ARN cuando enable_lambda = true
+  role          = var.existing_lambda_role_arn
   handler       = "handler.handler"
   runtime       = "python3.11"
   filename      = data.archive_file.lambda_zip.output_path
@@ -242,7 +219,7 @@ resource "aws_lambda_provisioned_concurrency_config" "pc" {
   provisioned_concurrent_executions  = var.lambda_provisioned
 }
 
-# ------------------------------------------- EventBridge (opcional) -------------------------------------------
+# ======================= EventBridge (opcional; controlado por enable_lambda) =======================
 resource "aws_cloudwatch_event_rule" "detect_inconsistency" {
   count       = var.enable_lambda ? 1 : 0
   name        = "${var.project}-inconsistency-rule"
@@ -268,7 +245,7 @@ resource "aws_lambda_permission" "allow_events" {
   source_arn    = aws_cloudwatch_event_rule.detect_inconsistency[0].arn
 }
 
-# ---------------------------------------- CloudWatch Alarma ----------------------------------------
+# ======================= CloudWatch Alarm (métrica custom) =======================
 resource "aws_cloudwatch_metric_alarm" "latency_alarm" {
   alarm_name          = "${var.project}-resolutionLatencyMs>1000"
   alarm_description   = "Resolution latency over 1000ms (avg)"
@@ -279,8 +256,4 @@ resource "aws_cloudwatch_metric_alarm" "latency_alarm" {
   evaluation_periods  = 1
   threshold           = 1000
   comparison_operator = "GreaterThanThreshold"
-}
-
-resource "random_id" "sg_suffix" {
-  byte_length = 2
 }
