@@ -45,14 +45,12 @@ variable "lambda_provisioned" {
   default = 2
 }
 
-# 🔑 Nuevo: activar/desactivar Lambda y EventBridge
 variable "enable_lambda" {
   type        = bool
   description = "Habilita/deshabilita Lambda y EventBridge"
   default     = false
 }
 
-# 🔑 Nuevo: ARN de rol existente para Lambda (solo se usa si enable_lambda = true)
 variable "existing_lambda_role_arn" {
   description = "ARN de un rol existente confiado a lambda.amazonaws.com"
   type        = string
